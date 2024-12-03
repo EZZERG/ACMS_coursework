@@ -63,6 +63,14 @@ class StateSpaceModel(GeneralStateSpaceModel):
         new_x = self.get_next_state(x)
         obs = self.get_observation(new_x)
         return new_x, obs
+    
+    def get_likelihood(self, pred_obs: NDArray, observation: NDArray) -> float:
+        diff = observation - pred_obs
+        inv_R_diag = 1.0 / np.diag(self.R)  # Inverse of the diagonal elements
+        exponent = -0.5 * np.sum((diff ** 2) * inv_R_diag)
+        normalization = (2 * np.pi) ** (len(observation) / 2) * np.sqrt(np.prod(np.diag(self.R)))
+        likelihood = np.exp(exponent) / normalization
+        return likelihood
 
     def simulate(
         self, steps: int, x0: Optional[NDArray] = None

@@ -23,6 +23,12 @@ class GeneralStateSpaceModel(ABC):
         pass
 
     @abstractmethod
+    def get_likelihood(
+        self, x: NDArray, observation: NDArray
+    ) -> Union[float, NDArray]:
+        pass
+
+    @abstractmethod
     def step(self, x: NDArray) -> Tuple[NDArray, NDArray]:
         pass
 
