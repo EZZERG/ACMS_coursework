@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 import matplotlib.pyplot as plt
 import pyro
 from pyro.infer import SMCFilter
@@ -23,6 +23,7 @@ class SMCExperiment:
         Q_scale: float = 0.01,
         R_scale: float = 0.01,
         nonlinearity_scale: float = 1.0,
+        unscaled_matrices: Optional[Dict[str, torch.Tensor]] = None,
     ):
         # Initialize state space model
         self.ssm = StateSpaceModel(
@@ -37,6 +38,7 @@ class SMCExperiment:
             Q_scale=Q_scale,
             R_scale=R_scale,
             nonlinearity_scale=nonlinearity_scale,
+            unscaled_matrices=unscaled_matrices,
         )
         
         self.num_particles = num_particles

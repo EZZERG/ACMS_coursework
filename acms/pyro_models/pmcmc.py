@@ -45,6 +45,7 @@ class ParticleMCMC:
         num_particles: int,
         n_mcmc_steps: int = 1000,
         proposal_scale: float = 0.1,
+        unscaled_matrices: Optional[Dict[str, torch.Tensor]] = None,
     ):
         """
         Initialize Particle MCMC for parameter estimation.
@@ -55,12 +56,14 @@ class ParticleMCMC:
             num_particles: Number of particles for SMC
             n_mcmc_steps: Number of MCMC iterations
             proposal_scale: Scale of the random walk proposal
+            unscaled_matrices: Dictionary of unscaled matrices from the true model
         """
         self.state_dim = state_dim
         self.obs_dim = obs_dim
         self.num_particles = num_particles
         self.n_mcmc_steps = n_mcmc_steps
         self.proposal_scale = proposal_scale
+        self.unscaled_matrices = unscaled_matrices
         
     def _create_experiment(self, params: PMCMCParameters) -> SMCExperiment:
         """Create SMC experiment with given parameters."""
@@ -72,7 +75,8 @@ class ParticleMCMC:
             C_scale=params.C_scale,
             Q_scale=params.Q_scale,
             R_scale=params.R_scale,
-            nonlinearity_scale=params.nonlinearity_scale
+            nonlinearity_scale=params.nonlinearity_scale,
+            unscaled_matrices=self.unscaled_matrices
         )
     
     def _log_prior(self, params: PMCMCParameters) -> float:

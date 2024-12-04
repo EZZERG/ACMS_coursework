@@ -1,5 +1,5 @@
 import torch
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 
 class StateSpaceModel:
     def __init__(
@@ -15,20 +15,45 @@ class StateSpaceModel:
         Q_scale: float = 0.01,
         R_scale: float = 0.01,
         nonlinearity_scale: float = 1.0,
+        unscaled_matrices: Optional[Dict[str, torch.Tensor]] = None,
     ) -> None:
         self.state_dim = state_dim
         self.obs_dim = obs_dim
         self.dt = dt
         self.nonlinearity = nonlinearity
         self.damping = damping  # For system stability
-
-        self.A = torch.randn(state_dim, state_dim) * A_scale
-        self.C = torch.randn(obs_dim, state_dim) * C_scale
-        self.Q_terms = torch.randn(state_dim, state_dim, state_dim) * Q_terms_scale
         self.nonlinearity_scale = nonlinearity_scale
 
-        self.Q = torch.eye(state_dim) * Q_scale
-        self.R = torch.eye(obs_dim) * R_scale
+        # Store scales for later unscaling
+        self.A_scale = A_scale
+        self.C_scale = C_scale
+        self.Q_terms_scale = Q_terms_scale
+        self.Q_scale = Q_scale
+        self.R_scale = R_scale
+
+        # Initialize matrices either from provided unscaled matrices or sample them
+        if unscaled_matrices is not None:
+            self.A = unscaled_matrices['A'] * A_scale
+            self.C = unscaled_matrices['C'] * C_scale
+            self.Q_terms = unscaled_matrices['Q_terms'] * Q_terms_scale
+            self.Q = unscaled_matrices['Q'] * Q_scale
+            self.R = unscaled_matrices['R'] * R_scale
+        else:
+            self.A = torch.randn(state_dim, state_dim) * A_scale
+            self.C = torch.randn(obs_dim, state_dim) * C_scale
+            self.Q_terms = torch.randn(state_dim, state_dim, state_dim) * Q_terms_scale
+            self.Q = torch.eye(state_dim) * Q_scale
+            self.R = torch.eye(obs_dim) * R_scale
+
+    def get_unscaled_matrices(self) -> Dict[str, torch.Tensor]:
+        """Export the unscaled matrices for initialization of a new model."""
+        return {
+            'A': self.A / self.A_scale,
+            'C': self.C / self.C_scale,
+            'Q_terms': self.Q_terms / self.Q_terms_scale,
+            'Q': self.Q / self.Q_scale,
+            'R': self.R / self.R_scale
+        }
 
     def sample_from_prior(self, num_samples: int = 1) -> torch.Tensor:
         """Sample initial states from the prior distribution."""
