@@ -15,6 +15,9 @@ class BPFMetrics:
     temp_norm_const_var: float
     filter_mean_variance: np.ndarray
     effective_sample_size: float
+    posterior_mean_bias: np.ndarray  # Add bias metric
+    posterior_mean_std: np.ndarray   # Add standard deviation metric
+    posterior_mean_mse: np.ndarray   # Add MSE metric
 
 class Experiment:
     def __init__(
@@ -47,7 +50,7 @@ class Experiment:
         self.true_states = None
         self.state_estimates = None
         self.metrics = None
-        
+
     def plot_tracking_results(self, dimensions=[0, 1]):
         """Plot particle filter tracking results for specified dimensions"""
         if not self.create_plots:
@@ -126,7 +129,6 @@ class Experiment:
         self.metrics = self._compute_bpf_metrics(pf, self.true_states, filter_results)
         return self.metrics
 
-
     def _compute_bpf_metrics(
         self,
         pf: ParticleFilter,
@@ -139,6 +141,7 @@ class Experiment:
         weights = filter_results["weights"]
         normalizing_constants = filter_results["normalizing_constants"]
     
+        # Original metrics
         rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2))
         mae = np.mean(np.abs(true_states - state_estimates))
         state_rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2, axis=0))
@@ -151,6 +154,12 @@ class Experiment:
         ])
         filter_mean_var = np.var(filter_means, axis=0)
         
+        # New posterior mean statistics
+        posterior_mean = np.mean(state_estimates, axis=0)
+        posterior_mean_bias = posterior_mean - np.mean(true_states, axis=0)
+        posterior_mean_std = np.std(state_estimates, axis=0)
+        posterior_mean_mse = np.mean((state_estimates - true_states) ** 2, axis=0)
+        
         ess = 1.0 / np.sum(weights ** 2)
         
         return BPFMetrics(
@@ -159,9 +168,11 @@ class Experiment:
             state_rmse=state_rmse,
             temp_norm_const_var=norm_constant_var,
             filter_mean_variance=filter_mean_var,
-            effective_sample_size=ess
+            effective_sample_size=ess,
+            posterior_mean_bias=posterior_mean_bias,
+            posterior_mean_std=posterior_mean_std,
+            posterior_mean_mse=posterior_mean_mse
         )
-
 class ExperimentScheduler:
     def __init__(
         self,
@@ -178,7 +189,7 @@ class ExperimentScheduler:
         self.n_steps = n_steps
         self.results_df = None
         self.trajectories = {}
-        self.last_norm_constants = {}  # Add new storage for last normalizing constants
+        self.last_norm_constants = {}
 
     def run(self):
         results = []
@@ -188,7 +199,6 @@ class ExperimentScheduler:
                 for N in self.n_particles_list:
                     print(f'Running experiment for d_x={d_x}, d_y={d_y}, N={N}')
                     
-                    # Store last normalizing constants for this configuration
                     last_constants = []
                     
                     for trial in range(self.n_trials):
@@ -200,10 +210,10 @@ class ExperimentScheduler:
                         )
                         metrics = experiment.run()
                         
-                        # Get last normalizing constant
                         last_norm_const = experiment.metrics.temp_norm_const_var
                         last_constants.append(last_norm_const)
                         
+                        # Extend the results dictionary with new metrics
                         results.append({
                             'state_dim': d_x,
                             'obs_dim': d_y,
@@ -214,7 +224,11 @@ class ExperimentScheduler:
                             'temp_norm_const_var': metrics.temp_norm_const_var,
                             'filter_mean_var': np.mean(metrics.filter_mean_variance),
                             'ess': metrics.effective_sample_size,
-                            'last_norm_const': last_norm_const
+                            'last_norm_const': last_norm_const,
+                            # Add new posterior mean statistics
+                            'posterior_mean_bias': np.mean(np.abs(metrics.posterior_mean_bias)),
+                            'posterior_mean_std': np.mean(metrics.posterior_mean_std),
+                            'posterior_mean_mse': np.mean(metrics.posterior_mean_mse)
                         })
                         
                         if trial == 0:
@@ -222,6 +236,8 @@ class ExperimentScheduler:
                                 experiment.true_states,
                                 experiment.state_estimates
                             )
+                    
+                    self.last_norm_constants[(d_x, d_y, N)] = last_constants
         
         self.results_df = pd.DataFrame(results)
 
@@ -229,68 +245,106 @@ class ExperimentScheduler:
         if self.results_df is None:
             raise ValueError("No results available. Run experiment first.")
             
-        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+        fig, axes = plt.subplots(3, 2, figsize=(15, 18))
         
-        # RMSE vs particles for different state dimensions
-        for d_x in self.state_dims_list:
-            data = self.results_df[self.results_df['state_dim'] == d_x]
-            mean_rmse = data.groupby('n_particles')['rmse'].mean()
-            if error_bars:
-                std_rmse = data.groupby('n_particles')['rmse'].std()
-                axes[0, 0].errorbar(mean_rmse.index, mean_rmse, yerr=std_rmse, label=f'd_x={d_x}')
-            else:
-                axes[0, 0].plot(mean_rmse.index, mean_rmse, 'o-', label=f'd_x={d_x}')
-        axes[0, 0].set_xlabel('Number of particles')
-        axes[0, 0].set_ylabel('RMSE')
-        axes[0, 0].set_title('RMSE vs Particles')
-        axes[0, 0].legend()
+        # Original plots
+        self._plot_rmse(axes[0, 0], error_bars)
+        self._plot_ess(axes[0, 1], error_bars)
+        self._plot_norm_const_var(axes[1, 0], error_bars)
+        self._plot_filter_mean_var(axes[1, 1], error_bars)
         
-        # ESS vs particles
-        for d_x in self.state_dims_list:
-            data = self.results_df[self.results_df['state_dim'] == d_x]
-            mean_ess = data.groupby('n_particles')['ess'].mean()
-            if error_bars:
-                std_ess = data.groupby('n_particles')['ess'].std()
-                axes[0, 1].errorbar(mean_ess.index, mean_ess, yerr=std_ess, label=f'd_x={d_x}')
-            else:
-                axes[0, 1].plot(mean_ess.index, mean_ess, 'o-', label=f'd_x={d_x}')
-        axes[0, 1].set_xlabel('Number of particles')
-        axes[0, 1].set_ylabel('ESS')
-        axes[0, 1].set_title('Effective Sample Size vs Particles')
-        axes[0, 1].legend()
-        
-        # Normalizing constant variance
-        for d_x in self.state_dims_list:
-            data = self.results_df[self.results_df['state_dim'] == d_x]
-            mean_var = data.groupby('n_particles')['temp_norm_const_var'].mean()
-            if error_bars:
-                std_var = data.groupby('n_particles')['temp_norm_const_var'].std()
-                axes[1, 0].errorbar(mean_var.index, mean_var, yerr=std_var, label=f'd_x={d_x}')
-            else:
-                axes[1, 0].plot(mean_var.index, mean_var, 'o-', label=f'd_x={d_x}')
-        axes[1, 0].set_xlabel('Number of particles')
-        axes[1, 0].set_ylabel('Normalizing Constant Variance')
-        axes[1, 0].set_title('Normalizing Constant Variance vs Particles')
-        axes[1, 0].legend()
-        
-        # Filter mean variance
-        for d_x in self.state_dims_list:
-            data = self.results_df[self.results_df['state_dim'] == d_x]
-            mean_var = data.groupby('n_particles')['filter_mean_var'].mean()
-            if error_bars:
-                std_var = data.groupby('n_particles')['filter_mean_var'].std()
-                axes[1, 1].errorbar(mean_var.index, mean_var, yerr=std_var, label=f'd_x={d_x}')
-            else:
-                axes[1, 1].plot(mean_var.index, mean_var, 'o-', label=f'd_x={d_x}')
-        axes[1, 1].set_xlabel('Number of particles')
-        axes[1, 1].set_ylabel('Filter Mean Variance')
-        axes[1, 1].set_title('Filter Mean Variance vs Particles')
-        axes[1, 1].legend()
+        # New posterior mean plots
+        self._plot_posterior_mean_bias(axes[2, 0], error_bars)
+        self._plot_posterior_mean_std(axes[2, 1], error_bars)
         
         plt.tight_layout()
         if save_dir:
             plt.savefig(f"{save_dir}/performance_metrics.png")
         plt.show()
+
+    def _plot_rmse(self, ax, error_bars):
+        for d_x in self.state_dims_list:
+            data = self.results_df[self.results_df['state_dim'] == d_x]
+            mean_rmse = data.groupby('n_particles')['rmse'].mean()
+            if error_bars:
+                std_rmse = data.groupby('n_particles')['rmse'].std()
+                ax.errorbar(mean_rmse.index, mean_rmse, yerr=std_rmse, label=f'd_x={d_x}')
+            else:
+                ax.plot(mean_rmse.index, mean_rmse, 'o-', label=f'd_x={d_x}')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('RMSE')
+        ax.set_title('RMSE vs Particles')
+        ax.legend()
+
+    def _plot_ess(self, ax, error_bars):
+        for d_x in self.state_dims_list:
+            data = self.results_df[self.results_df['state_dim'] == d_x]
+            mean_ess = data.groupby('n_particles')['ess'].mean()
+            if error_bars:
+                std_ess = data.groupby('n_particles')['ess'].std()
+                ax.errorbar(mean_ess.index, mean_ess, yerr=std_ess, label=f'd_x={d_x}')
+            else:
+                ax.plot(mean_ess.index, mean_ess, 'o-', label=f'd_x={d_x}')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('ESS')
+        ax.set_title('Effective Sample Size vs Particles')
+        ax.legend()
+
+    def _plot_norm_const_var(self, ax, error_bars):
+        for d_x in self.state_dims_list:
+            data = self.results_df[self.results_df['state_dim'] == d_x]
+            mean_var = data.groupby('n_particles')['temp_norm_const_var'].mean()
+            if error_bars:
+                std_var = data.groupby('n_particles')['temp_norm_const_var'].std()
+                ax.errorbar(mean_var.index, mean_var, yerr=std_var, label=f'd_x={d_x}')
+            else:
+                ax.plot(mean_var.index, mean_var, 'o-', label=f'd_x={d_x}')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Normalizing Constant Variance')
+        ax.set_title('Normalizing Constant Variance vs Particles')
+        ax.legend()
+
+    def _plot_filter_mean_var(self, ax, error_bars):
+        for d_x in self.state_dims_list:
+            data = self.results_df[self.results_df['state_dim'] == d_x]
+            mean_var = data.groupby('n_particles')['filter_mean_var'].mean()
+            if error_bars:
+                std_var = data.groupby('n_particles')['filter_mean_var'].std()
+                ax.errorbar(mean_var.index, mean_var, yerr=std_var, label=f'd_x={d_x}')
+            else:
+                ax.plot(mean_var.index, mean_var, 'o-', label=f'd_x={d_x}')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Filter Mean Variance')
+        ax.set_title('Filter Mean Variance vs Particles')
+        ax.legend()
+
+    def _plot_posterior_mean_bias(self, ax, error_bars):
+        for d_x in self.state_dims_list:
+            data = self.results_df[self.results_df['state_dim'] == d_x]
+            mean_bias = data.groupby('n_particles')['posterior_mean_bias'].mean()
+            if error_bars:
+                std_bias = data.groupby('n_particles')['posterior_mean_bias'].std()
+                ax.errorbar(mean_bias.index, mean_bias, yerr=std_bias, label=f'd_x={d_x}')
+            else:
+                ax.plot(mean_bias.index, mean_bias, 'o-', label=f'd_x={d_x}')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Posterior Mean Bias')
+        ax.set_title('Average Absolute Posterior Mean Bias vs Particles')
+        ax.legend()
+
+    def _plot_posterior_mean_std(self, ax, error_bars):
+        for d_x in self.state_dims_list:
+            data = self.results_df[self.results_df['state_dim'] == d_x]
+            mean_std = data.groupby('n_particles')['posterior_mean_std'].mean()
+            if error_bars:
+                std_std = data.groupby('n_particles')['posterior_mean_std'].std()
+                ax.errorbar(mean_std.index, mean_std, yerr=std_std, label=f'd_x={d_x}')
+            else:
+                ax.plot(mean_std.index, mean_std, 'o-', label=f'd_x={d_x}')
+        ax.set_xlabel('Number of particles')
+        ax.set_ylabel('Posterior Mean Std')
+        ax.set_title('Average Posterior Mean Standard Deviation vs Particles')
+        ax.legend()
 
     def print_summary(self):
         if self.results_df is None:
@@ -302,7 +356,10 @@ class ExperimentScheduler:
             'temp_norm_const_var': 'mean',
             'filter_mean_var': 'mean',
             'ess': 'mean',
-            'last_norm_const': ['mean', 'std']
+            'last_norm_const': ['mean', 'std'],
+            'posterior_mean_bias': ['mean', 'std'],
+            'posterior_mean_std': ['mean', 'std'],
+            'posterior_mean_mse': ['mean', 'std']
         }).round(4)
         
         print("\nExperiment Summary:")
