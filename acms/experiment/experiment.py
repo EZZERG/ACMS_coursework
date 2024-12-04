@@ -49,6 +49,8 @@ class Experiment:
         self.true_states = None
         self.state_estimates = None
         self.metrics = None
+        self.particles_history = None
+        self.weights_history = None
 
     def plot_tracking_results(self, dimensions=[0, 1]):
         """Plot particle filter tracking results for specified dimensions with confidence bands"""
@@ -63,18 +65,25 @@ class Experiment:
             ax = [ax]
 
         for i, dim in enumerate(dimensions):
-            # Plot true and estimated states
+            # Plot true states
             ax[i].plot(time, self.true_states[:, dim], "k-", label=f"True State {dim+1}")
-            ax[i].plot(
-                time, self.state_estimates[:, dim], "r--", label=f"Estimated State {dim+1}"
-            )
             
-            # Add confidence bands using standard deviation
-            std_dev = self.metrics.posterior_mean_std[dim]
+            # Compute weighted mean and std along particles axis for the current dimension
+            # particles_history shape: [T, n_particles, state_dim]
+            # weights_history shape: [T, n_particles]
+            weighted_mean = np.sum(self.particles_history[:, :, dim] * self.weights_history, axis=1)
+            
+            # Compute weighted variance
+            diff_squared = (self.particles_history[:, :, dim] - weighted_mean[:, np.newaxis])**2
+            weighted_var = np.sum(diff_squared * self.weights_history, axis=1)
+            weighted_std = np.sqrt(weighted_var)
+            
+            # Plot estimated trajectory and confidence bands
+            ax[i].plot(time, weighted_mean, "r--", label=f"Estimated State {dim+1}")
             ax[i].fill_between(
                 time,
-                self.state_estimates[:, dim] - 2*std_dev,
-                self.state_estimates[:, dim] + 2*std_dev,
+                weighted_mean - 2*weighted_std,
+                weighted_mean + 2*weighted_std,
                 color='r',
                 alpha=0.2,
                 label='95% Confidence'
@@ -100,9 +109,12 @@ class Experiment:
                 "k-",
                 label="True Trajectory",
             )
+            # Use weighted means for the phase plot
+            weighted_mean_0 = np.sum(self.particles_history[:, :, dimensions[0]] * self.weights_history, axis=1)
+            weighted_mean_1 = np.sum(self.particles_history[:, :, dimensions[1]] * self.weights_history, axis=1)
             ax.plot(
-                self.state_estimates[:, dimensions[0]],
-                self.state_estimates[:, dimensions[1]],
+                weighted_mean_0,
+                weighted_mean_1,
                 "r--",
                 label="Estimated Trajectory",
             )
@@ -134,6 +146,8 @@ class Experiment:
         )
         filter_results = pf.filter(observations)
         self.state_estimates = filter_results["state_estimates"]
+        self.particles_history = filter_results["particles_history"]
+        self.weights_history = filter_results["weights_history"]
         
         self.metrics = self._compute_bpf_metrics(pf, self.true_states, filter_results)
 
@@ -150,8 +164,8 @@ class Experiment:
         n_variance_samples: int = 100
     ) -> BPFMetrics:
         state_estimates = filter_results["state_estimates"]
-        particles = filter_results["particles"]
-        weights = filter_results["weights"]
+        particles_history = filter_results["particles_history"]  # [T, n_particles, state_dim]
+        weights_history = filter_results["weights_history"]      # [T, n_particles]
         normalizing_constants = filter_results["normalizing_constants"]
     
         # Original metrics
@@ -161,8 +175,12 @@ class Experiment:
         
         norm_constant_var = np.var(normalizing_constants)
         
+        # Use final time step particles and weights for filter mean variance
+        final_particles = particles_history[-1]  # [n_particles, state_dim]
+        final_weights = weights_history[-1]      # [n_particles]
+        
         filter_means = np.array([
-            np.sum(particles * weights[:, np.newaxis], axis=0)
+            np.sum(final_particles * final_weights[:, np.newaxis], axis=0)
             for _ in range(n_variance_samples)
         ])
         filter_mean_var = np.var(filter_means, axis=0)
@@ -173,7 +191,8 @@ class Experiment:
         posterior_mean_std = np.std(state_estimates, axis=0)
         posterior_mean_mse = np.mean((state_estimates - true_states) ** 2, axis=0)
         
-        ess = 1.0 / np.sum(weights ** 2)
+        # Calculate ESS using final weights
+        ess = 1.0 / np.sum(final_weights ** 2)
         
         return BPFMetrics(
             rmse=rmse,

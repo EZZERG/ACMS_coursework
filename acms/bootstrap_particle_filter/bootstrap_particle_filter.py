@@ -1,10 +1,7 @@
 from typing import Literal, Dict, Tuple
-
 import numpy as np
 from tqdm import tqdm
-
 from acms.state_space_model.general_state_space_model import GeneralStateSpaceModel
-
 
 class ParticleFilter:
     def __init__(
@@ -89,20 +86,34 @@ class ParticleFilter:
         T = len(observations)
         state_estimates = np.zeros((T, self.ssm.state_dim))
         normalizing_constants = np.zeros(T)
+        
+        # Initialize storage for particle and weight history with shape [T, n_particles, state_dim]
+        particles_history = np.zeros((T, self.n_particles, self.ssm.state_dim))
+        weights_history = np.zeros((T, self.n_particles))
 
         particles, weights = self.initialize_particles()
+        # Store initial particles and weights
+        particles_history[0] = particles
+        weights_history[0] = weights
 
         print("Running Particle Filter...")
         for t in tqdm(range(T)):
             particles = self.predict(particles)
             weights, normalizing_constants[t] = self.update(particles, weights, observations[t])
+            
             if self.ess_resampling and 1.0 / np.sum(weights**2) < self.n_particles / 2:
                 particles, weights = self.resample(particles, weights)
+            
             state_estimates[t] = self.get_state_estimate(particles, weights)
+            
+            # Store particles and weights at each time step
+            if t < T-1:  # Avoid index out of bounds
+                particles_history[t+1] = particles
+                weights_history[t+1] = weights
 
         return {
             "state_estimates": state_estimates,
-            "particles": particles,
-            "weights": weights,
+            "particles_history": particles_history,
+            "weights_history": weights_history,
             "normalizing_constants": normalizing_constants
         }
