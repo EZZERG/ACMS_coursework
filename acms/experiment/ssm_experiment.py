@@ -12,11 +12,9 @@ class BPFMetrics:
     rmse: float
     mae: float
     state_rmse: np.ndarray
-    normalizing_constant_variance: float
+    temp_norm_const_var: float
     filter_mean_variance: np.ndarray
     effective_sample_size: float
-    posterior_mean_error: float
-    posterior_mean_mc_se: np.ndarray
 
 class Experiment:
     def __init__(
@@ -129,76 +127,40 @@ class Experiment:
         return self.metrics
 
 
-def _compute_posterior_metrics(
-    self,
-    particles: np.ndarray,
-    weights: np.ndarray,
-    true_states: np.ndarray,
-    n_runs: int = 50
-) -> Tuple[float, np.ndarray]:
-    # Multiple runs of posterior mean estimation
-    posterior_means = np.array([
-        np.sum(particles * weights[:, np.newaxis], axis=0)
-        for _ in range(n_runs)
-    ])
+    def _compute_bpf_metrics(
+        self,
+        pf: ParticleFilter,
+        true_states: np.ndarray,
+        filter_results: Dict[str, np.ndarray],
+        n_variance_samples: int = 100
+    ) -> BPFMetrics:
+        state_estimates = filter_results["state_estimates"]
+        particles = filter_results["particles"]
+        weights = filter_results["weights"]
+        normalizing_constants = filter_results["normalizing_constants"]
     
-    # Error in posterior mean estimation
-    mean_error = np.mean(np.abs(np.mean(posterior_means, axis=0) - true_states[-1]))
-    
-    # Monte Carlo standard error
-    ess = 1.0 / np.sum(weights ** 2)
-    centered = particles - np.mean(particles, axis=0)
-    covariance = np.sum(
-        weights[:, np.newaxis, np.newaxis] * 
-        centered[:, :, np.newaxis] * 
-        centered[:, np.newaxis, :],
-        axis=0
-    )
-    mc_se = np.sqrt(np.diag(covariance) / ess)
-    
-    return mean_error, mc_se
-
-def _compute_bpf_metrics(
-    self,
-    pf: ParticleFilter,
-    true_states: np.ndarray,
-    filter_results: Dict[str, np.ndarray],
-    n_variance_samples: int = 100
-) -> BPFMetrics:
-    state_estimates = filter_results["state_estimates"]
-    particles = filter_results["particles"]
-    weights = filter_results["weights"]
-    normalizing_constants = filter_results["normalizing_constants"]
-
-    rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2))
-    mae = np.mean(np.abs(true_states - state_estimates))
-    state_rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2, axis=0))
-    
-    norm_constant_var = np.var(normalizing_constants)
-    
-    filter_means = np.array([
-        np.sum(particles * weights[:, np.newaxis], axis=0)
-        for _ in range(n_variance_samples)
-    ])
-    filter_mean_var = np.var(filter_means, axis=0)
-    
-    ess = 1.0 / np.sum(weights ** 2)
-    
-    # Add posterior mean assessment
-    posterior_mean_error, posterior_mean_mc_se = self._compute_posterior_metrics(
-        particles, weights, true_states
-    )
-    
-    return BPFMetrics(
-        rmse=rmse,
-        mae=mae,
-        state_rmse=state_rmse,
-        normalizing_constant_variance=norm_constant_var,
-        filter_mean_variance=filter_mean_var,
-        effective_sample_size=ess,
-        posterior_mean_error=posterior_mean_error,
-        posterior_mean_mc_se=posterior_mean_mc_se
-    )
+        rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2))
+        mae = np.mean(np.abs(true_states - state_estimates))
+        state_rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2, axis=0))
+        
+        norm_constant_var = np.var(normalizing_constants)
+        
+        filter_means = np.array([
+            np.sum(particles * weights[:, np.newaxis], axis=0)
+            for _ in range(n_variance_samples)
+        ])
+        filter_mean_var = np.var(filter_means, axis=0)
+        
+        ess = 1.0 / np.sum(weights ** 2)
+        
+        return BPFMetrics(
+            rmse=rmse,
+            mae=mae,
+            state_rmse=state_rmse,
+            temp_norm_const_var=norm_constant_var,
+            filter_mean_variance=filter_mean_var,
+            effective_sample_size=ess
+        )
 
 class ExperimentScheduler:
     def __init__(
@@ -216,6 +178,7 @@ class ExperimentScheduler:
         self.n_steps = n_steps
         self.results_df = None
         self.trajectories = {}
+        self.last_norm_constants = {}  # Add new storage for last normalizing constants
 
     def run(self):
         results = []
@@ -224,6 +187,10 @@ class ExperimentScheduler:
             for d_y in self.obs_dims_list:
                 for N in self.n_particles_list:
                     print(f'Running experiment for d_x={d_x}, d_y={d_y}, N={N}')
+                    
+                    # Store last normalizing constants for this configuration
+                    last_constants = []
+                    
                     for trial in range(self.n_trials):
                         experiment = Experiment(
                             n_particles=N,
@@ -233,6 +200,10 @@ class ExperimentScheduler:
                         )
                         metrics = experiment.run()
                         
+                        # Get last normalizing constant
+                        last_norm_const = experiment.metrics.temp_norm_const_var
+                        last_constants.append(last_norm_const)
+                        
                         results.append({
                             'state_dim': d_x,
                             'obs_dim': d_y,
@@ -240,9 +211,10 @@ class ExperimentScheduler:
                             'trial': trial,
                             'rmse': metrics.rmse,
                             'mae': metrics.mae,
-                            'norm_const_var': metrics.normalizing_constant_variance,
+                            'temp_norm_const_var': metrics.temp_norm_const_var,
                             'filter_mean_var': np.mean(metrics.filter_mean_variance),
-                            'ess': metrics.effective_sample_size
+                            'ess': metrics.effective_sample_size,
+                            'last_norm_const': last_norm_const
                         })
                         
                         if trial == 0:
@@ -290,9 +262,9 @@ class ExperimentScheduler:
         # Normalizing constant variance
         for d_x in self.state_dims_list:
             data = self.results_df[self.results_df['state_dim'] == d_x]
-            mean_var = data.groupby('n_particles')['norm_const_var'].mean()
+            mean_var = data.groupby('n_particles')['temp_norm_const_var'].mean()
             if error_bars:
-                std_var = data.groupby('n_particles')['norm_const_var'].std()
+                std_var = data.groupby('n_particles')['temp_norm_const_var'].std()
                 axes[1, 0].errorbar(mean_var.index, mean_var, yerr=std_var, label=f'd_x={d_x}')
             else:
                 axes[1, 0].plot(mean_var.index, mean_var, 'o-', label=f'd_x={d_x}')
@@ -327,9 +299,10 @@ class ExperimentScheduler:
         summary = self.results_df.groupby(['state_dim', 'obs_dim', 'n_particles']).agg({
             'rmse': ['mean', 'std'],
             'mae': ['mean', 'std'],
-            'norm_const_var': 'mean',
+            'temp_norm_const_var': 'mean',
             'filter_mean_var': 'mean',
-            'ess': 'mean'
+            'ess': 'mean',
+            'last_norm_const': ['mean', 'std']
         }).round(4)
         
         print("\nExperiment Summary:")
