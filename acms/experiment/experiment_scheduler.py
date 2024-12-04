@@ -226,6 +226,9 @@ class ExperimentScheduler:
         summary.to_csv(f"{save_dir}/summary.csv")
 
 if __name__ == "__main__":
+    # Fix random seed for reproducibility
+    np.random.seed(42)
+
     # Example usage of ExperimentScheduler
     scheduler = ExperimentScheduler(
         n_particles_list=[100, 500, 1000],

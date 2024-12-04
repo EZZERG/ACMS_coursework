@@ -207,6 +207,9 @@ class Experiment:
         )
 
 if __name__ == "__main__":
+    # Fixed random seed for reproducibility
+    np.random.seed(42)
+
     # Example of a single experiment with confidence bands
     print("\nRunning single experiment with confidence bands...")
     single_experiment = Experiment(

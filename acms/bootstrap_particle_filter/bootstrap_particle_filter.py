@@ -70,6 +70,7 @@ class ParticleFilter:
         """Resample particles according to their weights."""
         indices = np.random.choice(self.n_particles, size=self.n_particles, p=weights)
         new_particles = particles[indices]
+        # I needed to add this to avoid particle degeneracy
         new_weights = np.ones(self.n_particles) / self.n_particles
         return new_particles, new_weights
 
@@ -101,7 +102,10 @@ class ParticleFilter:
             particles = self.predict(particles)
             weights, normalizing_constants[t] = self.update(particles, weights, observations[t])
             
-            if self.ess_resampling and 1.0 / np.sum(weights**2) < self.n_particles / 2:
+            if self.ess_resampling:
+                if 1.0 / np.sum(weights**2) < self.n_particles / 2:
+                    particles, weights = self.resample(particles, weights)
+            else:
                 particles, weights = self.resample(particles, weights)
             
             state_estimates[t] = self.get_state_estimate(particles, weights)
