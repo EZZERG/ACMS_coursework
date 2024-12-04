@@ -1,7 +1,7 @@
-from typing import Literal
+from typing import Literal, Dict, Tuple
 
-import matplotlib.pyplot as plt
 import numpy as np
+from tqdm import tqdm
 
 from acms.state_space_model.general_state_space_model import GeneralStateSpaceModel
 
@@ -16,190 +16,93 @@ class ParticleFilter:
     ):
         self.ssm = ssm
         self.n_particles = n_particles
-        # TODO: particles are initialized as coming from a standard normal distribution
-        # This assumes that all ssm models use a standard normal distribution for the initial state
-        # Make it more general by using the initial state distribution of the ssm model
-        self.particles = np.random.randn(n_particles, ssm.state_dim)
-        self.weights = np.ones(n_particles) / n_particles
         self.resampling_method = resampling_method
-        # if True, resample when effective sample size is too small, otherwise resample at every time step
         self.ess_resampling = ess_resampling
 
-    def predict(self):
-        """Propagate particles through state dynamics"""
-        for i in range(self.n_particles):
-            self.particles[i] = self.ssm.get_next_state(self.particles[i])
+    def initialize_particles(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Initialize particles and weights."""
+        particles = np.random.randn(self.n_particles, self.ssm.state_dim)
+        weights = np.ones(self.n_particles) / self.n_particles
+        return particles, weights
 
-    def update(self, observation):
-        """Update weights using observation likelihood"""
-        for i in range(self.n_particles):
-            pred_obs = self.ssm.get_observation(self.particles[i])
-            self.weights[i] *= self.ssm.get_likelihood(
-                pred_obs=pred_obs, observation=observation
-            )
+    def predict(self, particles: np.ndarray) -> np.ndarray:
+        """Propagate particles through state dynamics."""
+        new_particles = np.array([self.ssm.get_next_state(p) for p in particles])
+        return new_particles
 
-        self.weights /= np.sum(self.weights)
+    def update(self, particles: np.ndarray, weights: np.ndarray, observation: np.ndarray) -> Tuple[np.ndarray, float]:
+        """Update weights using observation likelihood."""
+        new_weights = np.array([
+            w * self.ssm.get_likelihood(pred_obs=self.ssm.get_observation(p), observation=observation)
+            for p, w in zip(particles, weights)
+        ])
+        normalizing_constant = np.sum(new_weights)
+        new_weights /= normalizing_constant
+        return new_weights, normalizing_constant
 
-        # resample when effective sample size if becoming too small
-        if self.ess_resampling:
-            if 1.0 / np.sum(self.weights**2) < self.n_particles / 2:
-                self.resample()
-        else:
-            self.resample()
-
-    def resample(self):
+    def resample(self, particles: np.ndarray, weights: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Resample particles based on their weights."""
         if self.resampling_method == "systematic":
-            self._resample_systematic()
+            new_particles, new_weights = self._resample_systematic(particles, weights)
         elif self.resampling_method == "multinomial":
-            self._resample_multinomial()
+            new_particles, new_weights = self._resample_multinomial(particles, weights)
         else:
             raise ValueError("Invalid resampling method")
+        return new_particles, new_weights
 
-    def _resample_systematic(self):
-        """Systematic resampling"""
-        positions = (
-            np.random.random() + np.arange(self.n_particles)
-        ) / self.n_particles
-        cumsum = np.cumsum(self.weights)
+    def _resample_systematic(self, particles: np.ndarray, weights: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Systematic resampling."""
+        positions = (np.random.random() + np.arange(self.n_particles)) / self.n_particles
+        cumsum = np.cumsum(weights)
         cumsum[-1] = 1.0
 
         i, j = 0, 0
-        new_particles = np.zeros_like(self.particles)
+        new_particles = np.zeros_like(particles)
 
         while i < self.n_particles:
             if positions[i] < cumsum[j]:
-                new_particles[i] = self.particles[j]
+                new_particles[i] = particles[j]
                 i += 1
             else:
                 j += 1
 
-        self.particles = new_particles
-        self.weights.fill(1.0 / self.n_particles)
+        new_weights = np.ones(self.n_particles) / self.n_particles
+        return new_particles, new_weights
 
-    def _resample_multinomial(self):
-        """Resample particles according to their weights"""
-        indices = np.random.choice(
-            self.n_particles, size=self.n_particles, p=self.weights
-        )
-        self.particles = self.particles[indices]
-        # note: I missed in the lecture that I need to reset the weights to uniform after resampling
-        # but it seems to gratly help with keeping the std from collapsing to 0
-        # which is indicative of some level of particle degeneracy
-        self.weights.fill(1.0 / self.n_particles)
+    def _resample_multinomial(self, particles: np.ndarray, weights: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Resample particles according to their weights."""
+        indices = np.random.choice(self.n_particles, size=self.n_particles, p=weights)
+        new_particles = particles[indices]
+        new_weights = np.ones(self.n_particles) / self.n_particles
+        return new_particles, new_weights
 
-    def get_state_estimate(self):
-        """Return weighted mean of particles"""
-        return np.sum(self.particles * self.weights[:, np.newaxis], axis=0)
+    def get_state_estimate(self, particles: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        """Return weighted mean of particles."""
+        return np.sum(particles * weights[:, np.newaxis], axis=0)
 
-    def get_state_estimate_covariance(self):
-        """Return weighted covariance of particles"""
-        return np.cov(self.particles, aweights=self.weights)
+    def get_state_estimate_covariance(self, particles: np.ndarray, weights: np.ndarray) -> np.ndarray:
+        """Return weighted covariance of particles."""
+        return np.cov(particles, aweights=weights)
 
-    def filter(self, observations):
-        """Run filter over full observation sequence"""
+    def filter(self, observations: np.ndarray) -> Dict[str, np.ndarray]:
+        """Run filter over full observation sequence."""
         T = len(observations)
         state_estimates = np.zeros((T, self.ssm.state_dim))
+        normalizing_constants = np.zeros(T)
 
-        for t in range(T):
-            self.predict()
-            self.update(observations[t])
-            state_estimates[t] = self.get_state_estimate()
+        particles, weights = self.initialize_particles()
 
-        return state_estimates
+        print("Running Particle Filter...")
+        for t in tqdm(range(T)):
+            particles = self.predict(particles)
+            weights, normalizing_constants[t] = self.update(particles, weights, observations[t])
+            if self.ess_resampling and 1.0 / np.sum(weights**2) < self.n_particles / 2:
+                particles, weights = self.resample(particles, weights)
+            state_estimates[t] = self.get_state_estimate(particles, weights)
 
-    def plot_results(
-        self, true_states, state_estimates, dimensions=[0, 1], save_dir=None
-    ):
-        """Plot particle filter tracking results for specified dimensions"""
-        time = np.arange(len(true_states)) * self.ssm.dt
-
-        # Time series plot
-        fig, ax = plt.subplots(len(dimensions), 1, figsize=(10, 4 * len(dimensions)))
-        if len(dimensions) == 1:
-            ax = [ax]
-
-        for i, dim in enumerate(dimensions):
-            ax[i].plot(time, true_states[:, dim], "k-", label=f"True State {dim+1}")
-            ax[i].plot(
-                time, state_estimates[:, dim], "r--", label=f"Estimated State {dim+1}"
-            )
-            ax[i].fill_between(
-                time,
-                state_estimates[:, dim] - 2 * np.std(self.particles[:, dim]),
-                state_estimates[:, dim] + 2 * np.std(self.particles[:, dim]),
-                color="r",
-                alpha=0.2,
-            )
-            ax[i].set_xlabel("Time")
-            ax[i].set_ylabel(f"State {dim+1}")
-            ax[i].legend()
-
-        plt.tight_layout()
-        if save_dir:
-            plt.savefig(f"{save_dir}/pf_tracking.png")
-            plt.close()
-        else:
-            plt.show()
-
-        # Phase plot if multiple dimensions
-        if len(dimensions) >= 2:
-            fig, ax = plt.subplots(figsize=(8, 8))
-            ax.plot(
-                true_states[:, dimensions[0]],
-                true_states[:, dimensions[1]],
-                "k-",
-                label="True Trajectory",
-            )
-            ax.plot(
-                state_estimates[:, dimensions[0]],
-                state_estimates[:, dimensions[1]],
-                "r--",
-                label="Estimated Trajectory",
-            )
-            ax.set_xlabel(f"State {dimensions[0]+1}")
-            ax.set_ylabel(f"State {dimensions[1]+1}")
-            ax.legend()
-
-            if save_dir:
-                plt.savefig(f"{save_dir}/pf_phase.png")
-                plt.close()
-            else:
-                plt.show()
-
-
-if __name__ == "__main__":
-    from acms.state_space_model.state_space_model import StateSpaceModel
-
-    # Fix random seed for reproducibility
-    np.random.seed(42)
-
-    # Initialize model
-    model = StateSpaceModel(
-        state_dim=4,
-        obs_dim=2,
-        damping=0.99,
-        nonlinearity="quadratic",
-        nonlinearity_scale=1.0,
-        A_scale=0.1,
-        C_scale=0.1,
-        Q_scale=0.01,
-        R_scale=0.01,
-    )
-
-    # Generate true trajectory
-    n_steps = 100
-    true_states, observations = model.simulate(steps=n_steps)
-
-    # Initialize and run particle filter
-    pf = ParticleFilter(model, n_particles=1000)
-    state_estimates = pf.filter(observations)
-
-    # Plot results
-    pf.plot_results(true_states, state_estimates, dimensions=[0, 1])
-
-    # Print RMSE for each dimension
-    rmse = np.sqrt(np.mean((true_states - state_estimates) ** 2, axis=0))
-    print(f"RMSE per dimension: {rmse}")
-
-    # Plot model trajectories
-    model.plot_simulation(true_states, observations)
+        return {
+            "state_estimates": state_estimates,
+            "particles": particles,
+            "weights": weights,
+            "normalizing_constants": normalizing_constants
+        }
