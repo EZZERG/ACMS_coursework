@@ -1,0 +1,10 @@
+# Python and Enviornments
+*__pycache__*
+*.venv*
+plots/*
+loaded_plots/*
+*.pkl
+experiments_folder/
+experiment_results/
+*.png
+*.csv
